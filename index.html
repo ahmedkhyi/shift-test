@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MY SHIFT</title>
+
+<script type="module">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/supabase.min.js"></script>
+<script>
+  const SUPABASE_URL = "https://azqbdnhgyolmwmvxfowb.supabase.co";
+  const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF6cWJkbmhneW9sbXdtdnhmb3diIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA1MzkzNDMsImV4cCI6MjA3NjExNTM0M30.swJva7IonZm-hwE40-udUBZTrCmtj8xeaFCtcPNoC9Q";
+  const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+</script>
+
+// CONFIGURATION SUPABASE
+const SUPABASE_URL = "https://azqbdnhgyolmwmvxfowb.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF6cWJkbmhneW9sbXdtdnhmb3diIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA1MzkzNDMsImV4cCI6MjA3NjExNTM0M30.swJva7IonZm-hwE40-udUBZTrCmtj8xeaFCtcPNoC9Q";
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// OUTILS
+function fmtHMS(s){const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s%60;return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;}
+function msToSec(ms){return Math.floor(ms/1000);}
+function todayKey(d=new Date()){if(d.getHours()<7)d.setDate(d.getDate()-1);return d.toISOString().split('T')[0];}
+
+// VARIABLES
+let current=null, totals={'En prod':0,'Pause':0,'Formation':0,'Brief':0,'Déconnecté':0}, dayKey=null, elapsedTimer=null, clockTimer=null;
+let currentUser=null;
+
+// DOM
+const loginView=document.getElementById('loginView');
+const appView=document.getElementById('appView');
+const emailEl=document.getElementById('email');
+const firstNameEl=document.getElementById('firstName');
+const lastNameEl=document.getElementById('lastName');
+const passEl=document.getElementById('password');
+const loginBtn=document.getElementById('loginBtn');
+const loginError=document.getElementById('loginError');
+const agentNameEl=document.getElementById('agentName');
+const clockEl=document.getElementById('clock');
+const statusText=document.getElementById('statusText');
+const liveInfo=document.getElementById('liveInfo');
+const btnProd=document.getElementById('btnProd');
+const btnPause=document.getElementById('btnPause');
+const btnFormation=document.getElementById('btnFormation');
+const btnBrief=document.getElementById('btnBrief');
+const btnDeco=document.getElementById('btnDeco');
+const logoutContainer=document.getElementById('logoutContainer');
+const tProd=document.getElementById('tProd');
+const tPause=document.getElementById('tPause');
+const tFormation=document.getElementById('tFormation');
+const tBrief=document.getElementById('tBrief');
+const tDeco=document.getElementById('tDeco');
+const togglePassword = document.getElementById('togglePassword');
+
+// UI
+function setActiveVisual(status){
+  const buttons={'En prod':btnProd,'Pause':btnPause,'Formation':btnFormation,'Brief':btnBrief,'Déconnecté':btnDeco};
+  Object.entries(buttons).forEach(([s,btn])=>btn.style.opacity=status===s?'1':'0.35');
+}
+
+function updateTotalsUI(){
+  const run=current?current.status:null;
+  for(const [s,el] of Object.entries({'En prod':tProd,'Pause':tPause,'Formation':tFormation,'Brief':tBrief,'Déconnecté':tDeco})){
+    let sec=totals[s];
+    if(run===s) sec += msToSec(Date.now()-current.start.getTime());
+    el.textContent=`${s}: ${fmtHMS(sec)}`;
+  }
+}
+
+function startElapsedLoop(){
+  if(elapsedTimer) clearInterval(elapsedTimer);
+  elapsedTimer=setInterval(()=>{
+    if(!current) return;
+    const diff=msToSec(Date.now()-current.start.getTime());
+    statusText.textContent=`${current.status} — ${fmtHMS(diff)}`;
+    updateTotalsUI();
+  },1000);
+}
+
+function startClock(){
+  if(clockTimer) clearInterval(clockTimer);
+  clockEl.textContent=new Date().toLocaleTimeString('fr-FR',{hour12:false});
+  clockTimer=setInterval(()=>clockEl.textContent=new Date().toLocaleTimeString('fr-FR',{hour12:false}),1000);
+}
+
+// SUPABASE : Sauvegarder et charger les données
+async function saveData(){
+  if(!currentUser) return;
+  const { error } = await supabase
+    .from('agents')
+    .upsert({
+      user_id: currentUser.id,
+      day_key: dayKey,
+      email: currentUser.email,
+      first_name: currentUser.user_metadata?.first_name || '',
+      last_name: currentUser.user_metadata?.last_name || '',
+      en_prod: totals['En prod'],
+      pause: totals['Pause'],
+      formation: totals['Formation'],
+      brief: totals['Brief'],
+      deconnecte: totals['Déconnecté'],
+      current_status: current ? current.status : null,
+      current_start: current ? current.start.toISOString() : null
+    }, { onConflict:['user_id','day_key'] });
+  if(error) console.error(error);
+}
+
+async function loadData(){
+  const { data, error } = await supabase
+    .from('agents')
+    .select('*')
+    .eq('user_id', currentUser.id)
+    .eq('day_key', dayKey)
+    .maybeSingle();
+
+  if(error) { console.error(error); return; }
+
+  if(!data){
+    const { data: inserted, error: insertError } = await supabase
+      .from('agents')
+      .insert({
+        user_id: currentUser.id,
+        day_key: dayKey,
+        email: currentUser.email,
+        first_name: currentUser.user_metadata?.first_name || '',
+        last_name: currentUser.user_metadata?.last_name || '',
+        en_prod: 0,
+        pause: 0,
+        formation: 0,
+        brief: 0,
+        deconnecte: 0
+      })
+      .select()
+      .maybeSingle();
+
+    if(insertError){ console.error(insertError); return; }
+
+    totals = { 'En prod':0,'Pause':0,'Formation':0,'Brief':0,'Déconnecté':0 };
+    current = null;
+  } else {
+    totals = {
+      'En prod': data.en_prod || 0,
+      'Pause': data.pause || 0,
+      'Formation': data.formation || 0,
+      'Brief': data.brief || 0,
+      'Déconnecté': data.deconnecte || 0
+    };
+    if(data.current_status && data.current_start){
+      current = { status: data.current_status, start: new Date(data.current_start) };
+      setActiveVisual(current.status);
+      statusText.textContent = `${current.status} — ${fmtHMS(msToSec(Date.now()-current.start.getTime()))}`;
+      liveInfo.textContent = `Statut actuel: ${current.status}`;
+    } else {
+      current = null;
+      statusText.textContent='Non choisi';
+    }
+  }
+
+  updateTotalsUI();
+  startElapsedLoop();
+}
+
+// STATUT
+function setStatus(status){
+  if(current){
+    totals[current.status] += msToSec(Date.now()-current.start.getTime());
+  }
+  current={status,start:new Date()};
+  liveInfo.textContent=`Statut actuel: ${status}`;
+  setActiveVisual(status);
+  updateTotalsUI();
+  saveData();
+}
+
+// LOGIN
+loginBtn.addEventListener('click', async ()=>{
+  const email=emailEl.value.trim();
+  const password=passEl.value.trim();
+  const firstName = firstNameEl.value.trim();
+  const lastName = lastNameEl.value.trim();
+
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  if(error){ loginError.style.display='block'; loginError.textContent=error.message; }
+  else {
+    currentUser = data.user;
+    loginError.style.display='none';
+    await onLogin();
+  }
+});
+
+// Entrée clavier pour login
+passEl.addEventListener('keypress', async (e)=>{ if(e.key==='Enter') loginBtn.click(); });
+
+async function onLogin(){
+  loginView.style.display='none';
+  appView.style.display='block';
+  logoutContainer.style.display='block';
+  agentNameEl.textContent = `${currentUser.user_metadata?.first_name || ''} ${currentUser.user_metadata?.last_name || ''}`;
+  dayKey = todayKey();
+  startClock();
+  await loadData();
+}
+
+// LOGOUT
+btnDeco.addEventListener('click', async ()=>{
+  const answer = confirm("Voulez-vous vraiment vous déconnecter ?");
+  if(!answer) return;
+  setStatus('Déconnecté');
+  await saveData();
+  await supabase.auth.signOut();
+  location.reload();
+});
+
+// ŒIL mot de passe
+togglePassword.addEventListener('click', () => {
+  if(passEl.type === 'password'){
+    passEl.type = 'text';
+    togglePassword.textContent = '🙈';
+  } else {
+    passEl.type = 'password';
+    togglePassword.textContent = '👁️';
+  }
+});
+
+// BOUTONS STATUT
+btnProd.addEventListener('click',()=>setStatus('En prod'));
+btnPause.addEventListener('click',()=>setStatus('Pause'));
+btnFormation.addEventListener('click',()=>setStatus('Formation'));
+btnBrief.addEventListener('click',()=>setStatus('Brief'));
+btnDeco.addEventListener('click',()=>setStatus('Déconnecté'));
+</script>
+
+<style>
+body { margin:0; font-family:Poppins,sans-serif; background:#f4f6f8; display:flex; justify-content:center; padding:30px; }
+.card { width:420px; background:#fff; border-radius:12px; padding:20px; box-shadow:0 8px 30px rgba(0,0,0,0.08); display:flex; flex-direction:column; align-items:center; text-align:center; }
+h2 { margin:0 0 12px 0; }
+input { width:100%; padding:10px; margin:6px 0; border-radius:8px; border:1px solid #ddd; }
+.btn { width:100%; padding:10px; margin-top:10px; border:none; border-radius:8px; background:#007bff; color:#fff; font-weight:600; cursor:pointer; }
+#loginError { color:red; text-align:center; display:none; margin-top:6px; }
+#agentName { text-align:center; font-weight:700; margin-bottom:8px; font-size:1.1rem; }
+#clock { text-align:center; font-size:28px; font-weight:700; color:#111; margin-bottom:6px; }
+#statusLine { width:100%; margin-bottom:10px; text-align:center; }
+#statusText { font-weight:600; color:#333; }
+.buttons { display:flex; flex-wrap:wrap; gap:8px; justify-content:center; margin-bottom:10px; }
+.btn-status { min-width:110px; padding:10px; border:none; border-radius:8px; color:#fff; font-weight:700; cursor:pointer; transition:transform 0.15s ease; }
+.btn-status:hover { transform:scale(1.05); }
+.prod { background:green; } .pause { background:goldenrod; color:#111; } .formation { background:#0b79ff; } .brief { background:#ff8c00; } .deco { background:crimson; }
+#totalsBar { position:fixed; bottom:0; left:0; right:0; background:#fff; border-top:1px solid #e6e6e6; padding:10px; display:flex; justify-content:space-around; font-weight:700; }
+#totalsBar div { white-space:nowrap; font-size:0.95rem; color:#222; }
+#liveInfo { text-align:center; color:#444; font-size:0.95rem; margin-bottom:10px; }
+.logout-container { position:fixed; bottom:80px; left:50%; transform:translateX(-50%); width:160px; text-align:center; }
+.logout-container .btn-status { width:100%; background:crimson; }
+#togglePassword { font-size:18px; user-select:none; cursor:pointer; }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <!-- LOGIN -->
+  <div id="loginView">
+    <h2>Connexion agent</h2>
+    <input type="text" id="firstName" placeholder="Prénom">
+    <input type="text" id="lastName" placeholder="Nom">
+    <input type="email" id="email" placeholder="Email">
+    <div style="position:relative; width:100%;">
+      <input type="password" id="password" placeholder="Mot de passe" style="padding-right:40px; width:100%;">
+      <span id="togglePassword" style="position:absolute; right:10px; top:50%; transform:translateY(-50%); cursor:pointer;">👁️</span>
+    </div>
+    <button id="loginBtn" class="btn">Se connecter</button>
+    <div id="loginError"></div>
+  </div>
+
+  <!-- APP -->
+  <div id="appView" style="display:none">
+    <div id="agentName">Agent</div>
+    <div id="clock">--:--:--</div>
+    <div id="statusLine">Statut : <span id="statusText">Non choisi</span></div>
+
+    <div class="buttons">
+      <button id="btnProd" class="btn-status prod">En prod</button>
+      <button id="btnPause" class="btn-status pause">Pause</button>
+      <button id="btnFormation" class="btn-status formation">Formation</button>
+      <button id="btnBrief" class="btn-status brief">Brief</button>
+    </div>
+
+    <div id="liveInfo">Choisis un statut pour démarrer le suivi.</div>
+  </div>
+</div>
+
+<div class="logout-container" id="logoutContainer" style="display:none;">
+  <button id="btnDeco" class="btn-status deco">Déconnecté</button>
+</div>
+
+<div id="totalsBar">
+  <div id="tProd">En prod: 00:00:00</div>
+  <div id="tPause">Pause: 00:00:00</div>
+  <div id="tFormation">Formation: 00:00:00</div>
+  <div id="tBrief">Brief: 00:00:00</div>
+  <div id="tDeco">Déconnecté: 00:00:00</div>
+</div>
+
+</body>
+</html>
